@@ -239,13 +239,20 @@ func (file *fileInfo) hashUploadFileSHA1() (body []byte, fileSHA1 string, e erro
 			log.Printf("hash秒传模式上传文件 %s 的响应体的内容是：\n%s", file.Path, string(body))
 		}
 		log.Printf("status=7, hash秒传模式上传文件 %s 的响应体的内容是：\n%s", file.Path, string(body))
-		// signKey := string(v.GetStringBytes("sign_key"))
-		// signCheck := string(v.GetStringBytes("sign_check"))
-		// signVal, err := hashFileRange(f, signCheck)
-		// checkErr(err)
+		signKey := string(v.GetStringBytes("sign_key"))
+		signCheck := string(v.GetStringBytes("sign_check"))
+		start, length, err := parseRange(signCheck)
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			checkErr(err)
+		}
 
-		// body, err = uploadSHA1(filename, fileSize, totalHash, signKey, signVal, targetCID)
-		// checkErr(err)
+		signVal, err := sha1FileRangeOnRemote(file.SshClient, file.Path, start, length)
+		checkErr(err)
+		fmt.Printf("SHA1(%s, %s) = %s\n", file.Path, signCheck, signVal)
+
+		body, err = uploadSHA1(filename, fileSize, totalHash, signKey, signVal, targetCID)
+		checkErr(err)
 	}
 
 	return body, totalHash, nil

@@ -24,6 +24,7 @@ import (
 	"github.com/eiannone/keyboard"
 	"github.com/orzogc/fake115uploader/cipher"
 	"github.com/valyala/fastjson"
+	"golang.org/x/crypto/ssh"
 )
 
 // const tokenURL = "https://uplb.115.com/3.0/gettoken.php"
@@ -74,17 +75,21 @@ var (
 	httpClient      = &http.Client{Timeout: 30 * time.Second}
 	ecdhCipher      *cipher.EcdhCipher
 	hashUpload      *bool
+	sshClient       *ssh.Client
 )
 
 // 设置数据
 type uploadConfig struct {
-	Cookies   string `json:"cookies"`   // 115网页版的Cookie
-	CID       uint64 `json:"cid"`       // 115里文件夹的cid
-	ResultDir string `json:"resultDir"` // 在指定文件夹保存上传结果
-	HTTPRetry uint   `json:"httpRetry"` // HTTP请求失败后的重试次数
-	HTTPProxy string `json:"httpProxy"` // HTTP代理
-	OSSProxy  string `json:"ossProxy"`  // OSS上传代理
-	PartsNum  uint   `json:"partsNum"`  // 断点续传的分片数量
+	Cookies     string `json:"cookies"`     // 115网页版的Cookie
+	CID         uint64 `json:"cid"`         // 115里文件夹的cid
+	ResultDir   string `json:"resultDir"`   // 在指定文件夹保存上传结果
+	HTTPRetry   uint   `json:"httpRetry"`   // HTTP请求失败后的重试次数
+	HTTPProxy   string `json:"httpProxy"`   // HTTP代理
+	OSSProxy    string `json:"ossProxy"`    // OSS上传代理
+	PartsNum    uint   `json:"partsNum"`    // 断点续传的分片数量
+	SshHost     string `json:"sshHost"`     // sshhost
+	SshUser     string `json:"sshUser"`     // sshUser
+	SshPassword string `json:"sshPassword"` // sshPassword
 }
 
 // 上传结果数据
@@ -96,10 +101,11 @@ type resultData struct {
 
 // 要上传的文件的信息
 type fileInfo struct {
-	Path      string `json:"path"`      // 文件路径
-	ParentID  uint64 `json:"parentID"`  // 要上传到的文件夹的cid
-	FileSize  string `json:"fileSize"`  // 文件体积
-	TotalHash string `json:"totalHash"` // Sha1
+	Path      string      `json:"path"`      // 文件路径
+	ParentID  uint64      `json:"parentID"`  // 要上传到的文件夹的cid
+	FileSize  string      `json:"fileSize"`  // 文件体积
+	TotalHash string      `json:"totalHash"` // Sha1
+	SshClient *ssh.Client `json:"sshClient"` // ssh client
 }
 
 // 检查错误
@@ -552,6 +558,40 @@ func initialize() (e error) {
 	ecdhCipher, err = cipher.NewEcdhCipher()
 	checkErr(err)
 
+	if userID == "0" {
+		panic(fmt.Errorf("获取userkey出错，请确定cookies是否设置好"))
+	}
+	if *hashUpload {
+		if config.SshHost == "" || config.SshUser == "" || config.SshPassword == "" {
+			panic(fmt.Errorf("未配置ssh服务器"))
+		}
+		// 初始化SSH
+		sshClient, err = InitSSH(config.SshUser, config.SshPassword, config.SshHost)
+		if err != nil {
+			log.Fatalf("Failed to initialize SSH: %v", err)
+			panic(fmt.Errorf("ssh服务器初始化失败"))
+		}
+		// Verify the username
+		currentUser, err := executeRemoteCommand(sshClient, "whoami")
+		if err != nil {
+			log.Fatalf("Failed to get current user: %v", err)
+			panic(fmt.Errorf("获取当前用户失败"))
+		}
+		// Trim spaces for both expected and actual user
+		expectedUser := strings.TrimSpace(config.SshUser)
+		currentUser = strings.TrimSpace(currentUser)
+
+		if currentUser != expectedUser {
+			log.Fatalf("Current user mismatch: expected %s, got %s", expectedUser, currentUser)
+			panic(fmt.Errorf("当前用户不匹配"))
+		}
+		log.Printf("当前用户验证成功: %s", currentUser)
+		log.Printf("ssh初始化成功")
+		// 打印SSH客户端信息
+		fmt.Printf("SSH client: %v\n", sshClient)
+
+	}
+
 	return nil
 }
 
@@ -724,6 +764,7 @@ func main() {
 								ParentID:  pid,
 								FileSize:  size,
 								TotalHash: hash,
+								SshClient: sshClient,
 							})
 						} else {
 							log.Printf("没有创建文件夹 %s ，取消上传 %s", filepath.Base(pdir), path)
@@ -754,6 +795,8 @@ func main() {
 	}
 	// 等待一秒
 	time.Sleep(time.Second)
+
+	defer sshClient.Close()
 }
 
 // 上传文件
@@ -827,4 +870,21 @@ func (file *fileInfo) uploadFile() {
 			result.Success = append(result.Success, file.Path)
 		}
 	}
+}
+
+// InitSSH 初始化SSH连接
+func InitSSH(user, password, addr string) (*ssh.Client, error) {
+	config := &ssh.ClientConfig{
+		User: user,
+		Auth: []ssh.AuthMethod{
+			ssh.Password(password),
+		},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // 生产环境请使用更安全的方法
+	}
+
+	client, err := ssh.Dial("tcp", addr, config)
+	if err != nil {
+		return nil, err
+	}
+	return client, nil
 }
