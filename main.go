@@ -796,7 +796,7 @@ func main() {
 	// 等待一秒
 	time.Sleep(time.Second)
 
-	defer sshClient.Close()
+	//defer sshClient.Close()
 }
 
 // 上传文件

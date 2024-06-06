@@ -100,6 +100,14 @@ func uploadSHA1(filename, fileSize, totalHash, signKey, signVal string, targetCI
 		form.Set("sign_key", signKey)
 		form.Set("sign_val", signVal)
 	}
+	log.Print("=====================form begin===================")
+	// 打印每个键值对
+	for key, values := range form {
+		for _, value := range values {
+			fmt.Printf("%s: %s\n", key, value)
+		}
+	}
+	log.Print("=====================form end===================")
 
 	encrypted, err := ecdhCipher.Encrypt([]byte(form.Encode()))
 	checkErr(err)
@@ -162,7 +170,9 @@ func (file *fileInfo) uploadFileSHA1() (body []byte, fileSHA1 string, e error) {
 		signCheck := string(v.GetStringBytes("sign_check"))
 		signVal, err := hashFileRange(f, signCheck)
 		checkErr(err)
-
+		if *verbose {
+			log.Printf("hashFileRange:  %s %s %s", signKey, signCheck, signVal)
+		}
 		body, err = uploadSHA1(filename, fileSize, totalHash, signKey, signVal, targetCID)
 		checkErr(err)
 	}
@@ -241,15 +251,20 @@ func (file *fileInfo) hashUploadFileSHA1() (body []byte, fileSHA1 string, e erro
 		log.Printf("status=7, hash秒传模式上传文件 %s 的响应体的内容是：\n%s", file.Path, string(body))
 		signKey := string(v.GetStringBytes("sign_key"))
 		signCheck := string(v.GetStringBytes("sign_check"))
-		start, length, err := parseRange(signCheck)
-		if err != nil {
-			fmt.Printf("Error: %v\n", err)
-			checkErr(err)
-		}
 
-		signVal, err := sha1FileRangeOnRemote(file.SshClient, file.Path, start, length)
+		signVal, err := sha1FileRangeOnRemote(file.SshClient, file.Path, signCheck)
 		checkErr(err)
-		fmt.Printf("SHA1(%s, %s) = %s\n", file.Path, signCheck, signVal)
+		signVal = strings.TrimSpace(signVal)
+		fmt.Printf("\nSHA1(%s, %s) = %s\n", file.Path, signCheck, signVal)
+		fmt.Printf("\nfilename:%s  \nfileSize:%s \ntotalHash: %s \nsignKey:%s \nsignVal:%s \ntargetCID:%s \n", filename, fileSize, totalHash, signKey, signVal, targetCID)
+
+		// 打开文件
+		// file, err := os.Open("D:/[半熟恋人 第三季 半熟剧透篇].Love.Actually.2024.S03.Spoilers.WEB-DL.4K.HEVC.AAC-CMCTV.mp4")
+		// checkErr(err)
+		// defer file.Close()
+		// signVal1, err := hashFileRange(file, signCheck)
+		// checkErr(err)
+		// fmt.Printf("\nfilename:%s  \nfileSize:%s \ntotalHash: %s \nsignKey:%s \nsignVal:%s \ntargetCID:%s \n", filename, fileSize, totalHash, signKey, signVal1, targetCID)
 
 		body, err = uploadSHA1(filename, fileSize, totalHash, signKey, signVal, targetCID)
 		checkErr(err)

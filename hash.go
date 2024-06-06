@@ -6,8 +6,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"log"
 	"os"
-	"strconv"
 	"strings"
 
 	"golang.org/x/crypto/ssh"
@@ -34,6 +34,12 @@ func hashFileRange(f *os.File, signCheck string) (rangeHash string, e error) {
 	_, err = io.CopyN(h, f, end-start+1)
 	checkErr(err)
 
+	// buf := make([]byte, end-start+1)
+	// _, err = io.ReadFull(f, buf)
+	// checkErr(err)
+	// // 将读取的数据以hex格式保存到文件
+	// err = saveHexToFile(buf, "d:\\11.txt")
+	// checkErr(err)
 	return strings.ToUpper(hex.EncodeToString(h.Sum(nil))), nil
 }
 
@@ -85,7 +91,7 @@ func executeRemoteCommand(sshClient *ssh.Client, cmd string) (string, error) {
 }
 
 // sha1FileRangeOnRemote computes the SHA1 of a file range on a remote server
-func sha1FileRangeOnRemote(sshClient *ssh.Client, filePath string, start int64, length int64) (string, error) {
+func sha1FileRangeOnRemote(sshClient *ssh.Client, filePath string, signCheck string) (string, error) {
 	// Check if the file exists
 	existCmd := fmt.Sprintf(`[ -f "%s" ] && echo 1 || echo 0`, filePath)
 	existOutput, err := executeRemoteCommand(sshClient, existCmd)
@@ -98,30 +104,67 @@ func sha1FileRangeOnRemote(sshClient *ssh.Client, filePath string, start int64, 
 		return "", fmt.Errorf("file does not exist: %s", filePath)
 	}
 	// Build the remote command with the given start and length
-	cmd := fmt.Sprintf(`dd if="%s" bs=1 skip=%d count=%d 2>/dev/null | sha1sum | awk '{ print $1 }'`, filePath, start, length)
-	return executeRemoteCommand(sshClient, cmd)
-}
+	cmd := fmt.Sprintf(`python3 /volume1/homes/chlli/sha1range.py "%s" %s`, filePath, signCheck)
+	result, err := executeRemoteCommand(sshClient, cmd)
+	checkErr(err)
+	if result == "" {
+		panic(fmt.Errorf("sha1FileRangeOnRemote 返回空字符串: %s %s", filePath, signCheck))
+	}
 
-func parseRange(rangeStr string) (int64, int64, error) {
-	parts := strings.Split(rangeStr, "-")
+	parts := strings.Split(result, ",")
 	if len(parts) != 2 {
-		return 0, 0, fmt.Errorf("invalid range format")
+		panic(fmt.Errorf("sha1FileRangeOnRemote 返回格式不对: %s %s %s", filePath, signCheck, result))
 	}
 
-	start, err := strconv.ParseInt(parts[0], 10, 64)
-	if err != nil {
-		return 0, 0, fmt.Errorf("invalid start value: %v", err)
+	if parts[0] == "0" {
+		panic(fmt.Errorf("sha1FileRangeOnRemote 错误: %s %s %s", filePath, signCheck, result))
 	}
-
-	end, err := strconv.ParseInt(parts[1], 10, 64)
-	if err != nil {
-		return 0, 0, fmt.Errorf("invalid end value: %v", err)
-	}
-
-	if start > end {
-		return 0, 0, fmt.Errorf("start value is greater than end value")
-	}
-
-	length := end - start + 1
-	return start, length, nil
+	log.Printf("sha1FileRangeOnRemote return: %s %s %s", filePath, signCheck, parts[1])
+	return parts[1], nil
 }
+
+// func parseRange(rangeStr string) (int64, int64, error) {
+// 	parts := strings.Split(rangeStr, "-")
+// 	if len(parts) != 2 {
+// 		return 0, 0, fmt.Errorf("invalid range format")
+// 	}
+
+// 	start, err := strconv.ParseInt(parts[0], 10, 64)
+// 	if err != nil {
+// 		return 0, 0, fmt.Errorf("invalid start value: %v", err)
+// 	}
+
+// 	end, err := strconv.ParseInt(parts[1], 10, 64)
+// 	if err != nil {
+// 		return 0, 0, fmt.Errorf("invalid end value: %v", err)
+// 	}
+
+// 	if start > end {
+// 		return 0, 0, fmt.Errorf("start value is greater than end value")
+// 	}
+
+// 	length := end - start + 1
+// 	return start, length, nil
+// }
+
+// func saveHexToFile(data []byte, filePath string) error {
+// 	hexData := hex.EncodeToString(data)
+// 	file, err := os.Create(filePath)
+// 	if err != nil {
+// 		return fmt.Errorf("Failed to create file: %v", err)
+// 	}
+// 	defer file.Close()
+
+// 	for i := 0; i < len(hexData); i += 60 {
+// 		end := i + 60
+// 		if end > len(hexData) {
+// 			end = len(hexData)
+// 		}
+// 		_, err = file.WriteString(hexData[i:end] + "\n")
+// 		if err != nil {
+// 			return fmt.Errorf("failed to write hex data to output file: %v", err)
+// 		}
+// 	}
+
+// 	return nil
+// }
