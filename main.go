@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -72,6 +73,7 @@ var (
 	proxyPassword   string
 	httpClient      = &http.Client{Timeout: 30 * time.Second}
 	ecdhCipher      *cipher.EcdhCipher
+	hashUpload      *bool
 )
 
 // 设置数据
@@ -94,8 +96,10 @@ type resultData struct {
 
 // 要上传的文件的信息
 type fileInfo struct {
-	Path     string `json:"path"`     // 文件路径
-	ParentID uint64 `json:"parentID"` // 要上传到的文件夹的cid
+	Path      string `json:"path"`      // 文件路径
+	ParentID  uint64 `json:"parentID"`  // 要上传到的文件夹的cid
+	FileSize  string `json:"fileSize"`  // 文件体积
+	TotalHash string `json:"totalHash"` // Sha1
 }
 
 // 检查错误
@@ -404,6 +408,7 @@ func initialize() (e error) {
 	partsNum := flag.Uint("parts-num", 0, "断点续传模式上传文件的`分片数量`，范围为1到10000，默认为0（即自动分片）")
 	verbose = flag.Bool("v", false, "显示更详细的信息（调试用）")
 	help := flag.Bool("h", false, "显示帮助信息")
+	hashUpload = flag.Bool("hash", false, "Hash秒传模式上传`文件`")
 
 	flag.Parse()
 
@@ -519,12 +524,12 @@ func initialize() (e error) {
 	if *ossProxy == "" {
 		*ossProxy = strings.TrimSpace(config.OSSProxy)
 	}
-	if *ossProxy == "" {
-		*ossProxy = strings.TrimSpace(os.Getenv("http_proxy"))
-	}
-	if *ossProxy == "" {
-		*ossProxy = strings.TrimSpace(os.Getenv("https_proxy"))
-	}
+	// if *ossProxy == "" {
+	// 	*ossProxy = strings.TrimSpace(os.Getenv("http_proxy"))
+	// }
+	// if *ossProxy == "" {
+	// 	*ossProxy = strings.TrimSpace(os.Getenv("https_proxy"))
+	// }
 	if *ossProxy != "" {
 		proxyURL, err := url.Parse(*ossProxy)
 		if err == nil {
@@ -655,10 +660,90 @@ func main() {
 				continue
 			}
 		} else {
-			files = append(files, fileInfo{
-				Path:     file,
-				ParentID: config.CID,
-			})
+			if *hashUpload {
+				fileList, err := os.Open(file)
+				if err != nil {
+					log.Fatalf("无法打开文件列表: %v", err)
+				}
+				defer fileList.Close()
+				scanner := bufio.NewScanner(fileList)
+				// var files []fileInfo
+				// cidMap := make(map[string]string)
+				// config := struct {
+				// 	CID uint64
+				// }{CID: config.CID}
+
+				for scanner.Scan() {
+					line := scanner.Text()
+					parts := strings.Split(line, ",")
+					if len(parts) != 2 && len(parts) != 3 {
+						log.Printf("忽略无效行: %s", line)
+						continue
+					}
+
+					if len(parts) == 2 {
+						path := parts[0]
+						isBase := parts[1]
+						if isBase == "1" {
+							filename := filepath.Base(path)
+							cid, err := createDir(config.CID, filename)
+							if err != nil {
+								log.Printf("上传文件夹 %s 出现错误：%v", path, err)
+								break
+							}
+							cidMap[path] = cid
+						} else {
+							filename := filepath.Base(path)
+							pdir := filepath.Dir(path)
+							pdir = filepath.ToSlash(pdir)
+							if pid, ok := cidMap[pdir]; ok {
+								cid, err := createDir(pid, filename)
+
+								if err != nil {
+									log.Printf("上传文件夹 %s 出现错误：%v", path, err)
+									break
+								}
+
+								cidMap[path] = cid
+							} else {
+								log.Printf("没有创建文件夹 %s ，取消上传 %s", filepath.Base(pdir), path)
+								break
+							}
+						}
+					} else {
+						path := parts[0]
+						size := parts[1]
+						hash := parts[2]
+						pdir := filepath.Dir(path)
+						pdir = filepath.ToSlash(pdir)
+						//log.Printf("%s %s %s %s", path, size, hash, pdir)
+						//fmt.Printf("cidMap: %+v\n", cidMap)
+						if pid, ok := cidMap[pdir]; ok {
+							files = append(files, fileInfo{
+								Path:      path,
+								ParentID:  pid,
+								FileSize:  size,
+								TotalHash: hash,
+							})
+						} else {
+							log.Printf("没有创建文件夹 %s ，取消上传 %s", filepath.Base(pdir), path)
+							break
+						}
+					}
+
+					log.Printf(line)
+				}
+
+				if err := scanner.Err(); err != nil {
+					log.Fatalf("读取文件列表出错: %v", err)
+				}
+
+			} else {
+				files = append(files, fileInfo{
+					Path:     file,
+					ParentID: config.CID,
+				})
+			}
 		}
 	}
 
@@ -674,6 +759,14 @@ func main() {
 // 上传文件
 func (file *fileInfo) uploadFile() {
 	switch {
+	case *hashUpload:
+		_, err := file.hashFastUploadFile()
+		if err != nil {
+			log.Printf("hash秒传模式上传 %s 出现错误：%v", file.Path, err)
+			result.Failed = append(result.Failed, file.Path)
+			return
+		}
+		result.Success = append(result.Success, file.Path)
 	case *fastUpload:
 		_, err := file.fastUploadFile()
 		if err != nil {

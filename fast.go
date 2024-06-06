@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -204,6 +205,85 @@ func (file *fileInfo) fastUploadFile() (token *fastToken, e error) {
 
 		if *verbose {
 			log.Printf("秒传模式上传 %s 失败返回的内容是：\n%+v", file.Path, token)
+		}
+
+		return token, fmt.Errorf("秒传模式上传 %s 失败", file.Path)
+	} else {
+		panic(fmt.Errorf("秒传模式上传 %s 失败", file.Path))
+	}
+
+	return token, nil
+}
+
+// 利用文件的sha1 hash值上传文件获取响应
+func (file *fileInfo) hashUploadFileSHA1() (body []byte, fileSHA1 string, e error) {
+	defer func() {
+		if err := recover(); err != nil {
+			e = fmt.Errorf("hashUploadFileSHA1() error: %v", err)
+		}
+	}()
+
+	filename := filepath.Base(file.Path)
+	fileSize := file.FileSize
+	totalHash := file.TotalHash
+	targetCID := file.ParentID
+
+	body, err := uploadSHA1(filename, fileSize, totalHash, "", "", targetCID)
+	checkErr(err)
+
+	var p fastjson.Parser
+	v, err := p.ParseBytes(body)
+	checkErr(err)
+	if v.GetInt("status") == 7 && v.GetInt("statuscode") == 701 {
+		if *verbose {
+			log.Printf("hash秒传模式上传文件 %s 的响应体的内容是：\n%s", file.Path, string(body))
+		}
+		log.Printf("status=7, hash秒传模式上传文件 %s 的响应体的内容是：\n%s", file.Path, string(body))
+		// signKey := string(v.GetStringBytes("sign_key"))
+		// signCheck := string(v.GetStringBytes("sign_check"))
+		// signVal, err := hashFileRange(f, signCheck)
+		// checkErr(err)
+
+		// body, err = uploadSHA1(filename, fileSize, totalHash, signKey, signVal, targetCID)
+		// checkErr(err)
+	}
+
+	return body, totalHash, nil
+}
+
+// 以hash秒传模式上传文件
+func (file *fileInfo) hashFastUploadFile() (token *fastToken, e error) {
+	defer func() {
+		if err := recover(); err != nil {
+			e = fmt.Errorf("fastUploadFile() error: %v", err)
+		}
+	}()
+
+	token = new(fastToken)
+	log.Println("hash秒传模式上传文件：" + file.Path)
+
+	body, fileSHA1, err := file.hashUploadFileSHA1()
+	checkErr(err)
+	token.SHA1 = fileSHA1
+	if *verbose {
+		log.Printf("hash秒传模式上传文件 %s 的响应体的内容是：\n%s", file.Path, string(body))
+	}
+	var p fastjson.Parser
+	v, err := p.ParseBytes(body)
+	checkErr(err)
+	if v.GetInt("status") == 2 && v.Exists("statuscode") && v.GetInt("statuscode") == 0 {
+		log.Printf("hash秒传模式上传 %s 成功", file.Path)
+		if *removeFile {
+			err = remove(file.Path)
+			checkErr(err)
+		}
+	} else if v.GetInt("status") == 1 && v.Exists("statuscode") && v.GetInt("statuscode") == 0 {
+		// 秒传失败的响应包含普通上传模式和断点续传模式的token
+		err = json.Unmarshal(body, &token)
+		checkErr(err)
+
+		if *verbose {
+			log.Printf("hash秒传模式上传 %s 失败返回的内容是：\n%+v", file.Path, token)
 		}
 
 		return token, fmt.Errorf("秒传模式上传 %s 失败", file.Path)
