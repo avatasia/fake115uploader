@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -75,6 +76,9 @@ var (
 	httpClient      = &http.Client{Timeout: 30 * time.Second}
 	ecdhCipher      *cipher.EcdhCipher
 	hashUpload      *bool
+	remote          *bool
+	localDir        *string
+	remoteDir       *string
 	sshClient       *ssh.Client
 )
 
@@ -106,6 +110,8 @@ type fileInfo struct {
 	FileSize  string      `json:"fileSize"`  // 文件体积
 	TotalHash string      `json:"totalHash"` // Sha1
 	SshClient *ssh.Client `json:"sshClient"` // ssh client
+	localDir  string      `json:"localDir"`  // 本地根目录
+	remoteDir string      `json:"remoteDir"` // 网盘根目录
 }
 
 // 检查错误
@@ -415,6 +421,9 @@ func initialize() (e error) {
 	verbose = flag.Bool("v", false, "显示更详细的信息（调试用）")
 	help := flag.Bool("h", false, "显示帮助信息")
 	hashUpload = flag.Bool("hash", false, "Hash秒传模式上传`文件`")
+	remote = flag.Bool("remote", true, "文件在远程服务器上")
+	localDir = flag.String("ld", "", "hash文件对应数据所在的目录")
+	remoteDir = flag.String("rd", "", "网盘数据所在的目录")
 
 	flag.Parse()
 
@@ -561,7 +570,7 @@ func initialize() (e error) {
 	if userID == "0" {
 		panic(fmt.Errorf("获取userkey出错，请确定cookies是否设置好"))
 	}
-	if *hashUpload {
+	if *hashUpload && *remote {
 		if config.SshHost == "" || config.SshUser == "" || config.SshPassword == "" {
 			panic(fmt.Errorf("未配置ssh服务器"))
 		}
@@ -593,6 +602,23 @@ func initialize() (e error) {
 	}
 
 	return nil
+}
+
+func logWithLineNumber(format string, args ...interface{}) {
+	// 获取调用者的信息
+	_, file, line, ok := runtime.Caller(1)
+	if ok {
+		// 使用 fmt.Sprintf 格式化消息
+		message := fmt.Sprintf(format, args...)
+		fmt.Printf("%s:%d: %s\n", file, line, message)
+	} else {
+		// 如果无法获取调用者信息，直接打印格式化消息
+		fmt.Printf(format, args...)
+	}
+}
+
+func toLinuxPath(path string) string {
+	return strings.ReplaceAll(path, "\\", "/")
 }
 
 func main() {
@@ -724,6 +750,11 @@ func main() {
 					if len(parts) == 2 {
 						path := parts[0]
 						isBase := parts[1]
+						if *localDir != "" {
+							path = filepath.Join(*localDir, path)
+						}
+						path = toLinuxPath(path)
+						logWithLineNumber("---- " + path)
 						if isBase == "1" {
 							filename := filepath.Base(path)
 							cid, err := createDir(config.CID, filename)
@@ -735,7 +766,8 @@ func main() {
 						} else {
 							filename := filepath.Base(path)
 							pdir := filepath.Dir(path)
-							pdir = filepath.ToSlash(pdir)
+							pdir = toLinuxPath(pdir)
+							//pdir = filepath.ToSlash(pdir)
 							if pid, ok := cidMap[pdir]; ok {
 								cid, err := createDir(pid, filename)
 
@@ -754,10 +786,16 @@ func main() {
 						path := parts[0]
 						size := parts[1]
 						hash := parts[2]
+						if *localDir != "" {
+							path = filepath.Join(*localDir, path)
+						}
+						path = toLinuxPath(path)
+						logWithLineNumber("---- " + path)
 						pdir := filepath.Dir(path)
-						pdir = filepath.ToSlash(pdir)
-						//log.Printf("%s %s %s %s", path, size, hash, pdir)
-						//fmt.Printf("cidMap: %+v\n", cidMap)
+						pdir = toLinuxPath(pdir)
+						//pdir = filepath.ToSlash(pdir)
+						logWithLineNumber("%s %s %s %s", path, size, hash, pdir)
+						logWithLineNumber("cidMap: %+v\n", cidMap)
 						if pid, ok := cidMap[pdir]; ok {
 							files = append(files, fileInfo{
 								Path:      path,

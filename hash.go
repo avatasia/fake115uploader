@@ -104,7 +104,9 @@ func sha1FileRangeOnRemote(sshClient *ssh.Client, filePath string, signCheck str
 		return "", fmt.Errorf("file does not exist: %s", filePath)
 	}
 	// Build the remote command with the given start and length
-	cmd := fmt.Sprintf(`python3 /volume1/homes/chlli/sha1range.py "%s" %s`, filePath, signCheck)
+	//cmd := fmt.Sprintf(`python3 /root/sha1range.py "%s" %s`, filePath, signCheck)
+	cmd := fmt.Sprintf(`sha1range.sh "%s" %s`, filePath, signCheck)
+	logWithLineNumber(cmd)
 	result, err := executeRemoteCommand(sshClient, cmd)
 	checkErr(err)
 	if result == "" {
