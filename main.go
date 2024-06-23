@@ -621,6 +621,95 @@ func toLinuxPath(path string) string {
 	return strings.ReplaceAll(path, "\\", "/")
 }
 
+func processFileList(file string, files *[]fileInfo, cidMap map[string]uint64) error {
+	fileList, err := os.Open(file)
+	if err != nil {
+		log.Fatalf("无法打开文件列表: %v", err)
+	}
+	defer fileList.Close()
+	scanner := bufio.NewScanner(fileList)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		parts := strings.Split(line, ",")
+		if len(parts) != 2 && len(parts) != 3 {
+			log.Printf("忽略无效行: %s", line)
+			continue
+		}
+
+		if len(parts) == 2 {
+			path := parts[0]
+			isBase := parts[1]
+			if *localDir != "" {
+				path = filepath.Join(*localDir, path)
+			}
+			path = toLinuxPath(path)
+			logWithLineNumber("---- " + path)
+			if isBase == "1" {
+				filename := filepath.Base(path)
+				cid, err := createDir(config.CID, filename)
+				if err != nil {
+					log.Printf("上传文件夹 %s 出现错误：%v", path, err)
+					return err
+				}
+				cidMap[path] = cid
+			} else {
+				filename := filepath.Base(path)
+				pdir := filepath.Dir(path)
+				pdir = toLinuxPath(pdir)
+				//pdir = filepath.ToSlash(pdir)
+				if pid, ok := cidMap[pdir]; ok {
+					cid, err := createDir(pid, filename)
+
+					if err != nil {
+						log.Printf("上传文件夹 %s 出现错误：%v", path, err)
+						return err
+					}
+
+					cidMap[path] = cid
+				} else {
+					log.Printf("没有创建文件夹 %s ，取消上传 %s", filepath.Base(pdir), path)
+					return err
+				}
+			}
+		} else {
+			path := parts[0]
+			size := parts[1]
+			hash := parts[2]
+			if *localDir != "" {
+				path = filepath.Join(*localDir, path)
+			}
+			path = toLinuxPath(path)
+			logWithLineNumber("---- " + path)
+			pdir := filepath.Dir(path)
+			pdir = toLinuxPath(pdir)
+			//pdir = filepath.ToSlash(pdir)
+			logWithLineNumber("%s %s %s %s", path, size, hash, pdir)
+			logWithLineNumber("cidMap: %+v\n", cidMap)
+			if pid, ok := cidMap[pdir]; ok {
+				*files = append(*files, fileInfo{
+					Path:      path,
+					ParentID:  pid,
+					FileSize:  size,
+					TotalHash: hash,
+					SshClient: sshClient,
+				})
+			} else {
+				log.Printf("没有创建文件夹 %s ，取消上传 %s", filepath.Base(pdir), path)
+				return err
+			}
+		}
+
+		log.Printf(line)
+	}
+
+	if err := scanner.Err(); err != nil {
+		log.Fatalf("读取文件列表出错: %v", err)
+		return err
+	}
+	return nil
+}
+
 func main() {
 	defer func() {
 		if len(result.Failed) != 0 {
@@ -648,72 +737,32 @@ func main() {
 		if err != nil {
 			log.Printf("获取 %s 的信息出现错误：%v", file, err)
 		}
-
-		if info.IsDir() {
-			// 上传文件夹
-			if *recursive {
+		if *hashUpload {
+			// hash文件在一个目录下, 不递归，只有一层目录
+			if info.IsDir() {
 				err = filepath.WalkDir(file, func(path string, d fs.DirEntry, err error) error {
 					if d == nil {
 						return fmt.Errorf("获取文件夹 %s 的信息出现错误，取消上传该文件夹：%w", path, err)
 					}
 
 					path = filepath.Clean(path)
+					logWithLineNumber(path)
 
 					if d.IsDir() {
 						if err != nil {
 							log.Printf("获取文件夹 %s 的信息出现错误，取消上传该文件夹：%v", path, err)
 							return fs.SkipDir
 						}
+						return nil
+					}
+					if err != nil {
+						log.Printf("获取文件 %s 的信息出现错误，取消上传该文件：%v", path, err)
+						return nil
+					}
 
-						if path == file {
-							var filename string
-							if path == "." {
-								abs, err := filepath.Abs(path)
-								if err != nil {
-									return fmt.Errorf("获取文件夹 %s 的绝对路径失败，取消上传该文件夹：%w", path, err)
-								}
-								filename = filepath.Base(abs)
-							} else {
-								filename = filepath.Base(path)
-							}
-
-							cid, err := createDir(config.CID, filename)
-							if err != nil {
-								return err
-							}
-
-							cidMap[path] = cid
-
-							return nil
-						}
-
-						pdir := filepath.Dir(path)
-						if pid, ok := cidMap[pdir]; ok {
-							cid, err := createDir(pid, d.Name())
-
-							if err != nil {
-								return err
-							}
-
-							cidMap[path] = cid
-						} else {
-							return fmt.Errorf("没有创建文件夹 %s ，取消上传 %s", filepath.Base(pdir), path)
-						}
-					} else {
-						if err != nil {
-							log.Printf("获取文件 %s 的信息出现错误，取消上传该文件：%v", path, err)
-							return nil
-						}
-
-						pdir := filepath.Dir(path)
-						if pid, ok := cidMap[pdir]; ok {
-							files = append(files, fileInfo{
-								Path:     path,
-								ParentID: pid,
-							})
-						} else {
-							return fmt.Errorf("没有创建文件夹 %s ，取消上传 %s", filepath.Base(pdir), path)
-						}
+					err = processFileList(path, &files, cidMap)
+					if err != nil {
+						log.Fatalf("Error processing hash list: %v", err)
 					}
 					return nil
 				})
@@ -722,11 +771,6 @@ func main() {
 					continue
 				}
 			} else {
-				log.Printf("%s 是文件夹，上传文件夹需要参数 -recursive", file)
-				continue
-			}
-		} else {
-			if *hashUpload {
 				fileList, err := os.Open(file)
 				if err != nil {
 					log.Fatalf("无法打开文件列表: %v", err)
@@ -816,7 +860,84 @@ func main() {
 				if err := scanner.Err(); err != nil {
 					log.Fatalf("读取文件列表出错: %v", err)
 				}
+			}
+		} else {
+			if info.IsDir() {
+				// 上传文件夹
+				if *recursive {
+					err = filepath.WalkDir(file, func(path string, d fs.DirEntry, err error) error {
+						if d == nil {
+							return fmt.Errorf("获取文件夹 %s 的信息出现错误，取消上传该文件夹：%w", path, err)
+						}
 
+						path = filepath.Clean(path)
+
+						if d.IsDir() {
+							if err != nil {
+								log.Printf("获取文件夹 %s 的信息出现错误，取消上传该文件夹：%v", path, err)
+								return fs.SkipDir
+							}
+
+							if path == file {
+								var filename string
+								if path == "." {
+									abs, err := filepath.Abs(path)
+									if err != nil {
+										return fmt.Errorf("获取文件夹 %s 的绝对路径失败，取消上传该文件夹：%w", path, err)
+									}
+									filename = filepath.Base(abs)
+								} else {
+									filename = filepath.Base(path)
+								}
+
+								cid, err := createDir(config.CID, filename)
+								if err != nil {
+									return err
+								}
+
+								cidMap[path] = cid
+
+								return nil
+							}
+
+							pdir := filepath.Dir(path)
+							if pid, ok := cidMap[pdir]; ok {
+								cid, err := createDir(pid, d.Name())
+
+								if err != nil {
+									return err
+								}
+
+								cidMap[path] = cid
+							} else {
+								return fmt.Errorf("没有创建文件夹 %s ，取消上传 %s", filepath.Base(pdir), path)
+							}
+						} else {
+							if err != nil {
+								log.Printf("获取文件 %s 的信息出现错误，取消上传该文件：%v", path, err)
+								return nil
+							}
+
+							pdir := filepath.Dir(path)
+							if pid, ok := cidMap[pdir]; ok {
+								files = append(files, fileInfo{
+									Path:     path,
+									ParentID: pid,
+								})
+							} else {
+								return fmt.Errorf("没有创建文件夹 %s ，取消上传 %s", filepath.Base(pdir), path)
+							}
+						}
+						return nil
+					})
+					if err != nil {
+						log.Printf("上传文件夹 %s 出现错误：%v", file, err)
+						continue
+					}
+				} else {
+					log.Printf("%s 是文件夹，上传文件夹需要参数 -recursive", file)
+					continue
+				}
 			} else {
 				files = append(files, fileInfo{
 					Path:     file,
@@ -825,6 +946,8 @@ func main() {
 			}
 		}
 	}
+
+	logWithLineNumber("files: %+v\n", len(files))
 
 	for _, file := range files {
 		// 等待一秒
