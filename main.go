@@ -676,9 +676,11 @@ func processFileList(file string, files *[]fileInfo, cidMap map[string]uint64) e
 			path := parts[0]
 			size := parts[1]
 			hash := parts[2]
+
 			if *localDir != "" {
 				path = filepath.Join(*localDir, path)
 			}
+
 			path = toLinuxPath(path)
 			logWithLineNumber("---- " + path)
 			pdir := filepath.Dir(path)
@@ -695,8 +697,54 @@ func processFileList(file string, files *[]fileInfo, cidMap map[string]uint64) e
 					SshClient: sshClient,
 				})
 			} else {
-				log.Printf("没有创建文件夹 %s ，取消上传 %s", filepath.Base(pdir), path)
-				return err
+				relativePath := toLinuxPath(parts[0])
+				isSingleFile := !strings.Contains(relativePath, "/")
+				if isSingleFile {
+					*files = append(*files, fileInfo{
+						Path:      path,
+						ParentID:  config.CID,
+						FileSize:  size,
+						TotalHash: hash,
+						SshClient: sshClient,
+					})
+				} else {
+					parts := strings.Split(relativePath, "/")
+					tpid := config.CID
+					tppath := *localDir
+
+					// 按索引遍历切片
+					for i := 0; i < len(parts); i++ {
+						// 如果是最后一个元素
+						if i == len(parts)-1 {
+							*files = append(*files, fileInfo{
+								Path:      path,
+								ParentID:  tpid,
+								FileSize:  size,
+								TotalHash: hash,
+								SshClient: sshClient,
+							})
+						} else {
+							tp := filepath.Join(tppath, parts[i])
+							tp = toLinuxPath(tp)
+							logWithLineNumber("%s %s %s %s", parts[i], tpid, tppath, tp)
+
+							pid, ok := cidMap[tp]
+							if ok {
+								tpid = pid
+							} else {
+								cid, err := createDir(tpid, parts[i])
+								if err != nil {
+									log.Printf("上传文件夹 %s 出现错误：%v", path, err)
+									log.Printf("没有创建文件夹 %s ，取消上传 %s", filepath.Base(pdir), path)
+									return err
+								}
+								cidMap[tp] = cid
+								tpid = cid
+							}
+							tppath = tp
+						}
+					}
+				}
 			}
 		}
 
@@ -771,94 +819,9 @@ func main() {
 					continue
 				}
 			} else {
-				fileList, err := os.Open(file)
+				err = processFileList(file, &files, cidMap)
 				if err != nil {
-					log.Fatalf("无法打开文件列表: %v", err)
-				}
-				defer fileList.Close()
-				scanner := bufio.NewScanner(fileList)
-				// var files []fileInfo
-				// cidMap := make(map[string]string)
-				// config := struct {
-				// 	CID uint64
-				// }{CID: config.CID}
-
-				for scanner.Scan() {
-					line := scanner.Text()
-					parts := strings.Split(line, ",")
-					if len(parts) != 2 && len(parts) != 3 {
-						log.Printf("忽略无效行: %s", line)
-						continue
-					}
-
-					if len(parts) == 2 {
-						path := parts[0]
-						isBase := parts[1]
-						if *localDir != "" {
-							path = filepath.Join(*localDir, path)
-						}
-						path = toLinuxPath(path)
-						logWithLineNumber("---- " + path)
-						if isBase == "1" {
-							filename := filepath.Base(path)
-							cid, err := createDir(config.CID, filename)
-							if err != nil {
-								log.Printf("上传文件夹 %s 出现错误：%v", path, err)
-								break
-							}
-							cidMap[path] = cid
-						} else {
-							filename := filepath.Base(path)
-							pdir := filepath.Dir(path)
-							pdir = toLinuxPath(pdir)
-							//pdir = filepath.ToSlash(pdir)
-							if pid, ok := cidMap[pdir]; ok {
-								cid, err := createDir(pid, filename)
-
-								if err != nil {
-									log.Printf("上传文件夹 %s 出现错误：%v", path, err)
-									break
-								}
-
-								cidMap[path] = cid
-							} else {
-								log.Printf("没有创建文件夹 %s ，取消上传 %s", filepath.Base(pdir), path)
-								break
-							}
-						}
-					} else {
-						path := parts[0]
-						size := parts[1]
-						hash := parts[2]
-						if *localDir != "" {
-							path = filepath.Join(*localDir, path)
-						}
-						path = toLinuxPath(path)
-						logWithLineNumber("---- " + path)
-						pdir := filepath.Dir(path)
-						pdir = toLinuxPath(pdir)
-						//pdir = filepath.ToSlash(pdir)
-						logWithLineNumber("%s %s %s %s", path, size, hash, pdir)
-						logWithLineNumber("cidMap: %+v\n", cidMap)
-						if pid, ok := cidMap[pdir]; ok {
-							files = append(files, fileInfo{
-								Path:      path,
-								ParentID:  pid,
-								FileSize:  size,
-								TotalHash: hash,
-								SshClient: sshClient,
-							})
-						} else {
-							log.Printf("没有创建文件夹 %s ，取消上传 %s", filepath.Base(pdir), path)
-							break
-						}
-					}
-
-					log.Printf(line)
-				}
-
-				if err := scanner.Err(); err != nil {
-					log.Fatalf("读取文件列表出错: %v", err)
+					log.Fatalf("Error processing hash list: %v", err)
 				}
 			}
 		} else {
