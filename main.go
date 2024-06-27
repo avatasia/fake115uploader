@@ -631,7 +631,7 @@ func processFileList(file string, files *[]fileInfo, cidMap map[string]uint64) e
 
 	for scanner.Scan() {
 		line := scanner.Text()
-		parts := strings.Split(line, ",")
+		parts := strings.Split(line, "||")
 		if len(parts) != 2 && len(parts) != 3 {
 			log.Printf("忽略无效行: %s", line)
 			continue
