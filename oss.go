@@ -104,6 +104,7 @@ func getURL(url string) (body []byte, e error) {
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	checkErr(err)
 	req.Header.Set("User-Agent", userAgent)
+	//req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
 	req.Header.Set("Cookie", config.Cookies)
 	resp, err := doRequest(req)
 	checkErr(err)

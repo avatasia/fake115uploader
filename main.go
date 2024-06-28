@@ -34,11 +34,12 @@ import (
 // sampleInitURL = "https://uplb.115.com/3.0/sampleinitupload.php"
 
 const (
-	infoURL        = "https://proapi.115.com/app/uploadinfo"
-	initURL        = "https://uplb.115.com/4.0/initupload.php?k_ec=%s"
-	getinfoURL     = "https://uplb.115.com/3.0/getuploadinfo.php"
-	listFileURL    = "https://webapi.115.com/files?aid=1&cid=%d&o=user_ptime&asc=0&offset=0&show_dir=0&limit=%d&natsort=1&format=json"
-	listFileDirURL = "https://webapi.115.com/files?aid=1&cid=%d&o=user_ptime&asc=0&offset=0&show_dir=1&limit=100000&natsort=1&format=json"
+	infoURL     = "https://proapi.115.com/app/uploadinfo"
+	initURL     = "https://uplb.115.com/4.0/initupload.php?k_ec=%s"
+	getinfoURL  = "https://uplb.115.com/3.0/getuploadinfo.php"
+	listFileURL = "https://webapi.115.com/files?aid=1&cid=%d&o=user_ptime&asc=0&offset=0&show_dir=0&limit=%d&natsort=1&format=json"
+	//listFileDirURL = "https://webapi.115.com/files?aid=1&cid=%d&o=user_ptime&asc=0&offset=0&show_dir=1&limit=100000&natsort=1&format=json"
+	listFileDirURL = "https://aps.115.com/natsort/files.php?aid=1&cid=%d&o=file_name&asc=0&offset=0&show_dir=1&limit=1000&code=&scid=&snap=0&natsort=1&record_open_time=1&count_folders=1&type=&source=&format=json&fc_mix=0"
 	downloadURL    = "https://proapi.115.com/app/chrome/downurl"
 	orderURL       = "https://webapi.115.com/files/order"
 	createDirURL   = "https://webapi.115.com/files/add"
@@ -323,26 +324,31 @@ func createDir(pid uint64, name string) (cid uint64, e error) {
 	}
 	// 要创建的文件夹已经存在
 	if v.GetInt("errno") == 20004 {
-		reqURL, err := url.Parse(fmt.Sprintf(searchURL, pid))
-		checkErr(err)
-		query := reqURL.Query()
-		query.Set("search_value", name)
-		reqURL.RawQuery = query.Encode()
-		v, err := getURLJSON(reqURL.String())
-		// 请求有可能返回空body
-		if err == nil {
-			cid, err = findDir(v, pid, name)
-			if err == nil {
-				return cid, nil
-			}
-		}
-		if *verbose {
-			log.Printf("搜索文件夹失败，改为直接查找文件夹：%v", err)
-		}
+		// reqURL, err := url.Parse(fmt.Sprintf(searchURL, pid))
+		// checkErr(err)
+		// query := reqURL.Query()
+		// query.Set("search_value", name)
+		// reqURL.RawQuery = query.Encode()
+		// v, err := getURLJSON(reqURL.String())
+		// logWithLineNumber("%v\n", v)
+
+		// // 请求有可能返回空body
+		// if err == nil {
+		// 	cid, err = findDir(v, pid, name)
+		// 	if err == nil {
+		// 		return cid, nil
+		// 	}
+		// }
+		// if *verbose {
+		// 	log.Printf("搜索文件夹失败，改为直接查找文件夹：%v", err)
+		// }
 
 		// 如果搜索的文件夹不存在，就直接查找
 		fileURL := fmt.Sprintf(listFileDirURL, pid)
+		logWithLineNumber("%v\n", fileURL)
+
 		v, err = getURLJSON(fileURL)
+		logWithLineNumber("%v\n", v)
 		checkErr(err)
 		cid, err = findDir(v, pid, name)
 		if err == nil {
@@ -646,13 +652,42 @@ func processFileList(file string, files *[]fileInfo, cidMap map[string]uint64) e
 			path = toLinuxPath(path)
 			logWithLineNumber("---- " + path)
 			if isBase == "1" {
-				filename := filepath.Base(path)
-				cid, err := createDir(config.CID, filename)
-				if err != nil {
-					log.Printf("上传文件夹 %s 出现错误：%v", path, err)
-					return err
+				relativePath := toLinuxPath(parts[0])
+				isSingleFile := !strings.Contains(relativePath, "/")
+				// 根目录
+				if isSingleFile {
+					filename := filepath.Base(path)
+					cid, err := createDir(config.CID, filename)
+					if err != nil {
+						log.Printf("上传文件夹 %s 出现错误：%v", path, err)
+						return err
+					}
+					cidMap[path] = cid
+				} else {
+					parts1 := strings.Split(relativePath, "/")
+					tpid := config.CID
+					tppath := *localDir
+					for i := 0; i < len(parts1); i++ {
+						tp := filepath.Join(tppath, parts1[i])
+						tp = toLinuxPath(tp)
+						logWithLineNumber("%s %d %s %s", parts1[i], tpid, tppath, tp)
+
+						pid, ok := cidMap[tp]
+						if ok {
+							tpid = pid
+						} else {
+							cid, err := createDir(tpid, parts1[i])
+							if err != nil {
+								log.Printf("上传文件夹 %s 出现错误：%v", path, err)
+								log.Printf("没有创建文件夹 %s ，取消上传 %s", tppath, path)
+								return err
+							}
+							cidMap[tp] = cid
+							tpid = cid
+						}
+						tppath = tp
+					}
 				}
-				cidMap[path] = cid
 			} else {
 				filename := filepath.Base(path)
 				pdir := filepath.Dir(path)
@@ -708,14 +743,14 @@ func processFileList(file string, files *[]fileInfo, cidMap map[string]uint64) e
 						SshClient: sshClient,
 					})
 				} else {
-					parts := strings.Split(relativePath, "/")
+					parts1 := strings.Split(relativePath, "/")
 					tpid := config.CID
 					tppath := *localDir
 
 					// 按索引遍历切片
-					for i := 0; i < len(parts); i++ {
+					for i := 0; i < len(parts1); i++ {
 						// 如果是最后一个元素
-						if i == len(parts)-1 {
+						if i == len(parts1)-1 {
 							*files = append(*files, fileInfo{
 								Path:      path,
 								ParentID:  tpid,
@@ -724,18 +759,18 @@ func processFileList(file string, files *[]fileInfo, cidMap map[string]uint64) e
 								SshClient: sshClient,
 							})
 						} else {
-							tp := filepath.Join(tppath, parts[i])
+							tp := filepath.Join(tppath, parts1[i])
 							tp = toLinuxPath(tp)
-							logWithLineNumber("%s %s %s %s", parts[i], tpid, tppath, tp)
+							logWithLineNumber("%s %d %s %s", parts1[i], tpid, tppath, tp)
 
 							pid, ok := cidMap[tp]
 							if ok {
 								tpid = pid
 							} else {
-								cid, err := createDir(tpid, parts[i])
+								cid, err := createDir(tpid, parts1[i])
 								if err != nil {
 									log.Printf("上传文件夹 %s 出现错误：%v", path, err)
-									log.Printf("没有创建文件夹 %s ，取消上传 %s", filepath.Base(pdir), path)
+									log.Printf("没有创建文件夹 %s ，取消上传 %s", tppath, path)
 									return err
 								}
 								cidMap[tp] = cid
